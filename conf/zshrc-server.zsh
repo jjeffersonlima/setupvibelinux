@@ -20,10 +20,32 @@ if command -v starship >/dev/null; then eval "$(starship init zsh)"; fi
 # 4. ALIASES
 
 # --- SetupVibe ---
-alias setupvibe="curl --proto '=https' --tlsv1.2 -fsSL server.setupvibe.dev | bash" # Reinstala ou atualiza o SetupVibe Server
+alias setupvibe="curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/jjeffersonlima/setupvibelinux/main/server.sh | bash" # Reinstala ou atualiza o SetupVibe Server
 
 # --- AI CLIs ---
 alias cc="claude --permission-mode=auto --dangerously-skip-permissions"        # Claude CLI sem confirmações
+
+# --- AI Sandbox (ai-jail wrapper & aliases) ---
+ai-jail() {
+    case "$1" in
+        agy)
+            shift
+            command ai-jail --network --rw-map "$HOME/.gemini" agy "$@"
+            ;;
+        gemini|claude|codex|opencode|crush|grok|pi|jcode|kimi|kiro-cli|devin)
+            local tool="$1"
+            shift
+            command ai-jail --network "$tool" "$@"
+            ;;
+        *)
+            command ai-jail "$@"
+            ;;
+    esac
+}
+alias jagy="ai-jail agy"
+alias jclaude="ai-jail claude"
+alias jcodex="ai-jail codex"
+alias jopencode="ai-jail opencode"
 
 # --- Skills CLI ---
 alias skl="skills list"                         # Lista todas as skills instaladas

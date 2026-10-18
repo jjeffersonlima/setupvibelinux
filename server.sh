@@ -30,6 +30,12 @@ readonly CTOP_VERSION="0.7.7"
 readonly CTOP_SHA256_AMD64="b78374734ebe3d14b6edee3d5512c911c250d7fa7f3f964cb00acd3bc5a02a09"
 readonly CTOP_SHA256_ARM64="d8d91e0fea53a8c78fa81192f078272e5a92f0ea6c4f0e38ec7c944d76e6f02f"
 
+SCRIPT_DIR=""
+if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
+SETUPVIBE_RAW_BASE="${SETUPVIBE_RAW_BASE:-https://raw.githubusercontent.com/jjeffersonlima/setupvibelinux/main}"
+
 # --- HELPERS ---
 usage() {
     cat <<EOF
@@ -370,6 +376,9 @@ fi
 
 
 declare -a STEP_STATUS
+declare -a STEP_ERROR
+declare -a STEP_LOG_FILE
+declare -a STEP_EXIT_CODE
 # A section always returns success to the caller; inspect LAST_STEP_OK instead.
 LAST_STEP_OK=true
 
@@ -471,20 +480,31 @@ run_section() {
     echo -e "${BOLD}▶ [$((index + 1))/${#STEPS[@]}] $title ${NC}"
     echo -e "${BLUE}========================================================${NC}"
 
+    local log_dir="$REAL_HOME/.setupvibe/logs"
+    sys_do install -d -o "$REAL_USER" -g "$REAL_GROUP" -m 0755 "$log_dir" 2>/dev/null || user_do mkdir -p "$log_dir"
+    local step_log="$log_dir/step_$((index + 1)).log"
+
     set +e
     (
         set -Eeuo pipefail
         "$section_function"
-    )
-    status=$?
+    ) 2>&1 | tee "$step_log"
+    status=${PIPESTATUS[0]}
     set -e
 
     if (( status == 0 )); then
         STEP_STATUS[index]="${GREEN}✔ OK${NC}"
         LAST_STEP_OK=true
+        rm -f "$step_log" 2>/dev/null || true
     else
         STEP_STATUS[index]="${RED}✘ Error (exit $status)${NC}"
         LAST_STEP_OK=false
+        INSTALL_FAILED=true
+        STEP_EXIT_CODE[index]=$status
+        STEP_LOG_FILE[index]="$log_dir/step_$((index + 1))_error.log"
+        mv -f "$step_log" "${STEP_LOG_FILE[index]}" 2>/dev/null || true
+        sys_do chown "$REAL_USER:$REAL_GROUP" "${STEP_LOG_FILE[index]}" 2>/dev/null || true
+        STEP_ERROR[index]=$(tail -n 6 "${STEP_LOG_FILE[index]}" 2>/dev/null || true)
         echo -e "${RED}✘ Step failed; remaining installation steps will not run.${NC}" >&2
     fi
 
@@ -542,6 +562,23 @@ safe_download() {
     echo -e "${GREEN}✔ Downloaded: $dest${NC}"
 }
 
+deploy_repo_file() {
+    local rel_path=$1
+    local dest_path=$2
+    local min_bytes=${3:-10}
+    local local_file="${SCRIPT_DIR:-}/$rel_path"
+
+    if [[ -n "${SCRIPT_DIR:-}" && -f "$local_file" ]]; then
+        local dest_dir
+        dest_dir=$(dirname "$dest_path")
+        user_do mkdir -p "$dest_dir"
+        sys_do install -o "$REAL_USER" -g "$REAL_GROUP" -m 0644 "$local_file" "$dest_path"
+        echo -e "${GREEN}✔ Deployed local: $dest_path${NC}"
+    else
+        safe_download "$SETUPVIBE_RAW_BASE/$rel_path" "$dest_path" "$min_bytes"
+    fi
+}
+
 backup_file_once() {
     local file=$1
     local backup="${file}.pre-setupvibe"
@@ -559,7 +596,7 @@ install_setupvibe_bin() {
         "$REAL_HOME/.setupvibe" \
         "$REAL_HOME/.setupvibe/bin"
     user_do rm -f "$REAL_HOME/.setupvibe/bin/sshcopykey"
-    if ! safe_download https://raw.githubusercontent.com/promovaweb/setupvibe/main/bin/ssh_copy_id "$REAL_HOME/.setupvibe/bin/ssh_copy_id" 500; then
+    if ! deploy_repo_file "bin/ssh_copy_id" "$REAL_HOME/.setupvibe/bin/ssh_copy_id" 500; then
         return 1
     fi
     user_do chmod +x "$REAL_HOME/.setupvibe/bin/ssh_copy_id"
@@ -624,6 +661,85 @@ install_herdr() {
 }
 
 
+install_opencode() {
+    echo "Checking OpenCode..."
+    if ! user_do bash -c "export PATH=\$HOME/.local/bin:\$PATH; command -v opencode" &>/dev/null; then
+        echo "Installing OpenCode..."
+        user_do bash -c "curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path"
+        if [[ -f "$REAL_HOME/.opencode/bin/opencode" ]]; then
+            user_do mkdir -p "$REAL_HOME/.local/bin"
+            user_do ln -sfn "$REAL_HOME/.opencode/bin/opencode" "$REAL_HOME/.local/bin/opencode"
+        fi
+    fi
+
+    if user_do bash -c "export PATH=\$HOME/.local/bin:\$PATH; command -v opencode" &>/dev/null; then
+        user_do bash -c "export PATH=\$HOME/.local/bin:\$PATH; opencode --version" >/dev/null
+        echo -e "${GREEN}✔ OpenCode installed and validated.${NC}"
+    else
+        echo -e "${YELLOW}⚠ OpenCode could not be validated.${NC}"
+    fi
+}
+
+
+install_ai_memory() {
+    echo "Checking ai-memory..."
+    if ! user_do bash -c "export PATH=\$HOME/.local/bin:\$PATH; command -v ai-memory" &>/dev/null; then
+        echo "Installing ai-memory..."
+        user_do bash -c "curl -fsSL https://github.com/akitaonrails/ai-memory/releases/latest/download/install.sh | sh"
+    fi
+
+    if user_do bash -c "export PATH=\$HOME/.local/bin:\$PATH; command -v ai-memory" &>/dev/null; then
+        user_do bash -c "export PATH=\$HOME/.local/bin:\$PATH; ai-memory --version" >/dev/null
+        echo "Setting up ai-memory background service and agent wiring..."
+        user_do bash -c "export PATH=\$HOME/.local/bin:\$PATH; ai-memory setup --yes" 2>/dev/null || true
+        echo -e "${GREEN}✔ ai-memory installed and initialized.${NC}"
+    else
+        echo -e "${YELLOW}⚠ ai-memory could not be installed.${NC}"
+    fi
+}
+
+
+install_ai_jail() {
+    local ai_jail_version="2.10.0"
+    local ai_jail_arch
+    local ai_jail_sha256
+    local ai_jail_url
+    local ai_jail_tmp
+
+    echo "Checking ai-jail..."
+    if ! user_do bash -c "export PATH=\$HOME/.local/bin:\$PATH; command -v ai-jail" &>/dev/null; then
+        if [[ "$ARCH_RAW" == "x86_64" || "$ARCH_RAW" == "amd64" ]]; then
+            ai_jail_arch="linux-x86_64"
+            ai_jail_sha256="cd4b4b5dad69d6fb11a0cd9a17e6c2e1848cac4ba3d8da0a507a6eb535dc0714"
+        fi
+
+        if [[ -n "${ai_jail_arch:-}" ]]; then
+            echo "Installing ai-jail v${ai_jail_version} ($ai_jail_arch)..."
+            ai_jail_url="https://github.com/akitaonrails/ai-jail/releases/download/v${ai_jail_version}/ai-jail-${ai_jail_arch}.tar.gz"
+            ai_jail_tmp=$(mktemp)
+            if safe_download "$ai_jail_url" "$ai_jail_tmp" 1000000 "$ai_jail_sha256"; then
+                user_do mkdir -p "$REAL_HOME/.local/bin"
+                user_do tar -xzf "$ai_jail_tmp" -C "$REAL_HOME/.local/bin" ai-jail
+                user_do chmod 0755 "$REAL_HOME/.local/bin/ai-jail"
+                rm -f "$ai_jail_tmp"
+            else
+                rm -f "$ai_jail_tmp"
+                return 1
+            fi
+        fi
+    fi
+
+    if user_do bash -c "export PATH=\$HOME/.local/bin:\$PATH; command -v ai-jail" &>/dev/null; then
+        user_do bash -c "export PATH=\$HOME/.local/bin:\$PATH; ai-jail --version" >/dev/null
+        echo "Bootstrapping ai-jail permissions for AI agents..."
+        user_do bash -c "export PATH=\$HOME/.local/bin:\$PATH; ai-jail --bootstrap" 2>/dev/null || true
+        echo -e "${GREEN}✔ ai-jail installed and bootstrapped.${NC}"
+    else
+        echo -e "${YELLOW}⚠ ai-jail could not be installed on this platform/architecture.${NC}"
+    fi
+}
+
+
 # --- INSTALLATION STEPS ---
 
 
@@ -649,7 +765,7 @@ step_1() {
     apt_do install -y \
         ca-certificates curl file figlet fontconfig fzf git gnupg iproute2 jq \
         logrotate nano procps psmisc rsyslog sshpass tmux unzip wget \
-        cron
+        cron bubblewrap
 
     echo "Installing or updating zoxide..."
     run_remote_script user https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh
@@ -711,10 +827,15 @@ step_2() {
 
     echo "Configuring Ansible..."
     if $IS_UBUNTU; then
-        echo "Using the official Ansible Ubuntu PPA..."
-        apt_do install -y software-properties-common
-        sys_do add-apt-repository --yes --update ppa:ansible/ansible
-        apt_do install -y ansible
+        if apt-cache show ansible &>/dev/null; then
+            echo "Ansible is available natively in Ubuntu ($DISTRO_CODENAME). Skipping PPA."
+            apt_do install -y ansible
+        else
+            echo "Using the official Ansible Ubuntu PPA..."
+            apt_do install -y software-properties-common
+            sys_do add-apt-repository --yes --update ppa:ansible/ansible
+            apt_do install -y ansible
+        fi
     elif $IS_DEBIAN; then
         echo "Using the Debian ansible-core package..."
         apt_do install -y ansible-core
@@ -737,7 +858,7 @@ step_2() {
     sys_do install -d -o "$REAL_USER" -g "$REAL_GROUP" -m 0755 \
         "$REAL_HOME/.setupvibe" \
         "$REAL_HOME/.setupvibe/portainer_data"
-    safe_download https://raw.githubusercontent.com/promovaweb/setupvibe/main/conf/portainer-compose.yml "$REAL_HOME/.setupvibe/portainer-compose.yml"
+    deploy_repo_file "conf/portainer-compose.yml" "$REAL_HOME/.setupvibe/portainer-compose.yml"
 
     if sys_do docker info >/dev/null 2>&1; then
         echo "Starting Portainer..."
@@ -836,7 +957,7 @@ step_5() {
     user_do sed -i 's/╭/┌/g; s/╰/└/g' "$REAL_HOME/.config/starship.toml"
 
     backup_file_once "$REAL_HOME/.zshrc"
-    safe_download https://raw.githubusercontent.com/promovaweb/setupvibe/main/conf/zshrc-server.zsh "$REAL_HOME/.zshrc"
+    deploy_repo_file "conf/zshrc-server.zsh" "$REAL_HOME/.zshrc"
 
     # shellcheck disable=SC2016 # Keep HOME and PATH literal for future shells.
     if ! grep -Fq 'export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"' "$REAL_HOME/.bashrc" 2>/dev/null; then
@@ -847,6 +968,12 @@ step_5() {
         fi
         # shellcheck disable=SC2016 # Keep HOME and PATH literal in .bashrc.
         echo 'export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"' |
+            user_do tee -a "$REAL_HOME/.bashrc" >/dev/null
+    fi
+
+    # Ensure setupvibe alias is in .bashrc
+    if ! grep -q 'alias setupvibe=' "$REAL_HOME/.bashrc" 2>/dev/null; then
+        echo 'alias setupvibe="curl --proto '\''=https'\'' --tlsv1.2 -fsSL https://raw.githubusercontent.com/jjeffersonlima/setupvibelinux/main/server.sh | bash"' |
             user_do tee -a "$REAL_HOME/.bashrc" >/dev/null
     fi
 
@@ -863,7 +990,7 @@ step_6() {
 
     echo "Downloading tmux-server.conf..."
     backup_file_once "$REAL_HOME/.tmux.conf"
-    safe_download https://raw.githubusercontent.com/promovaweb/setupvibe/main/conf/tmux-server.conf "$REAL_HOME/.tmux.conf"
+    deploy_repo_file "conf/tmux-server.conf" "$REAL_HOME/.tmux.conf"
 
     if [[ "$(id -u)" -eq 0 && "$REAL_HOME" != "/root" ]]; then
         sys_do mkdir -p /root/.tmux/plugins
@@ -956,6 +1083,15 @@ step_7() {
 
     echo "Installing Herdr..."
     install_herdr
+
+    echo "Installing OpenCode..."
+    install_opencode
+
+    echo "Installing ai-memory..."
+    install_ai_memory
+
+    echo "Installing ai-jail..."
+    install_ai_jail
 }
 
 
@@ -1082,6 +1218,19 @@ done
 echo ""
 
 if [[ "$INSTALL_FAILED" == "true" ]]; then
+    echo -e "${RED}--------------------------------------------------------${NC}"
+    echo -e "${BOLD}${RED}Detalhes das falhas encontradas:${NC}"
+    echo -e "${RED}--------------------------------------------------------${NC}"
+    for i in "${!STEPS[@]}"; do
+        if [[ -n "${STEP_ERROR[$i]:-}" ]]; then
+            echo -e "${YELLOW}▶ [$((i + 1))] ${STEPS[$i]} (código de saída: ${STEP_EXIT_CODE[$i]:-1}):${NC}"
+            while IFS= read -r err_line; do
+                [[ -z "$err_line" ]] && continue
+                echo -e "    ${RED}│${NC} $err_line"
+            done <<< "${STEP_ERROR[$i]}"
+            echo -e "    ${CYAN}↳ Log detalhado em: ${STEP_LOG_FILE[$i]}${NC}\n"
+        fi
+    done
     echo -e "${RED}${BOLD}SetupVibe Server Edition failed before completion.${NC}" >&2
     exit 1
 fi

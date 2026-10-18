@@ -361,3 +361,75 @@ efetivo do serviço ficou sem caminhos duplicados. Também passaram as
 validações de versões dos ecossistemas, CLIs de IA, `tldr` via `tlrc`, checksum
 e propriedade do `ctop`, binding SQLite do Agentlytics e saída antecipada do
 Desktop sem TTY.
+
+## Aprendizados do Ubuntu 26.04 (outubro de 2026)
+
+### PHP 8.5 nativo no Ubuntu 26.04+ (resolute)
+
+O Ubuntu 26.04 LTS inclui o PHP 8.5 nativamente em seus repositórios oficiais.
+O PPA `ppa:ondrej/php` não possui pacotes para essa distribuição e retorna
+HTTP 404, gerando falha no `apt-get update` e bloqueando todas as etapas
+seguintes no modo estrito `set -Eeuo pipefail`. O instalador agora verifica se
+`php${PHP_VERSION}` já existe no cache do APT antes de tentar adicionar o PPA.
+Além disso, fontes legadas no formato deb822 (`ondrej-ubuntu-php-*.sources`)
+são removidas na limpeza inicial de repositórios.
+
+### Ansible nativo no Ubuntu 26.04+
+
+O metapacote `ansible` está disponível no repositório `universe` do Ubuntu 26.04.
+Assim como no PHP, a adição do PPA externo é evitada quando a distribuição
+já fornece o pacote nativamente.
+
+### Binário do utilitário Rust Trippy
+
+O crate Cargo `trippy` instala o executável com o nome `trip`. A checagem de
+existência de ferramenta agora avalia `command -v trip` para evitar
+recompilações repetidas e garantir a idempotência da etapa de rede.
+
+### Guarda Fail-Fast para distribuições não suportadas
+
+O instalador `desktop.sh` agora valida antecipadamente a presença de `apt-get` e
+`dpkg`, além de validar se a distribuição pertence à família Debian/Ubuntu
+suportada (`ubuntu` ou `debian`). Tentativas de execução em distribuições não
+suportadas (como Fedora, Arch, openSUSE ou Alpine) são rejeitadas de forma
+imediata com erro claro, prevenindo falhas parciais por comandos inexistentes.
+
+### Diagnóstico de systemd no WSL
+
+Em ambientes WSL (Windows Subsystem for Linux), o `desktop.sh` detecta a
+plataforma e emite um alerta orientativo caso o `systemd` não esteja em
+execução como PID 1, informando como ativar `systemd=true` no `/etc/wsl.conf`
+para o correto funcionamento de Docker, SSH, cron e PM2.
+
+### Suporte a Bubblewrap na base do sistema
+
+O pacote `bubblewrap` (`bwrap`) foi adicionado aos pacotes essenciais de sistema
+tanto no `desktop.sh` quanto no `server.sh`. Isso estabelece o alicerce de
+sandboxing para execução segura e isolada de agentes de codificação por IA
+(como `ai-jail`).
+
+### Ecossistema de IA: OpenCode, ai-memory e ai-jail
+
+A etapa de ferramentas de IA (Etapa 13 no Desktop e Etapa 7 no Server) foi
+expandida para incluir:
+
+- `opencode`: instalado diretamente pelo instalador oficial e symlinkado para
+  `~/.local/bin/opencode`;
+- `ai-memory`: instalado pelo instalador oficial do GitHub Releases e ativado
+  via `ai-memory setup --yes`;
+- `ai-jail`: binário nativo pré-compilado via GitHub Releases (com verificação
+  SHA-256) e bootstrap de permissões para os agentes (`ai-jail --bootstrap`);
+- Aliases e wrapper de shell para execução com rede ativada e mapeamento de
+  credenciais (`ai-jail agy`, `jagy`, `jclaude`, `jcodex`, `jopencode`).
+
+### Captura granular de falhas e logs por etapa
+
+Cada etapa agora transmite sua saída normalmente para o terminal enquanto
+grava um log dedicado em `~/.setupvibe/logs/step_N.log`. Se a etapa for bem-sucedida,
+o arquivo temporário é removido. Se houver falha (`status != 0`):
+
+1. A etapa é marcada como `✘ Error`;
+2. O log é preservado como `~/.setupvibe/logs/step_N_error.log` com propriedade
+   do usuário real;
+3. O resumo final lista o trecho exato de erro das últimas linhas e o caminho do
+   log completo, eliminando a necessidade de rolar manualmente o terminal.

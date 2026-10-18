@@ -43,6 +43,12 @@ echo ""
 # --- ENVIRONMENT ---
 export COMPOSER_ALLOW_SUPERUSER=1
 
+SCRIPT_DIR=""
+if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
+SETUPVIBE_RAW_BASE="${SETUPVIBE_RAW_BASE:-https://raw.githubusercontent.com/jjeffersonlima/setupvibelinux/main}"
+
 # --- HELPERS ---
 
 die() {
@@ -186,6 +192,9 @@ fi
 
 # --- CLEANUP APT KEYRINGS & SOURCES ---
 if [[ "$(uname -s)" == "Linux" ]]; then
+    command -v apt-get >/dev/null 2>&1 || die "APT is required. SetupVibe Desktop supports Ubuntu 24.04+, Debian 12+, and Zorin OS 18+."
+    command -v dpkg >/dev/null 2>&1 || die "dpkg is required."
+
     echo -e "${YELLOW}Preparing APT environment...${NC}"
     # Ensure keyrings directory exists
     sys_do mkdir -p -m 755 /etc/apt/keyrings
@@ -207,6 +216,7 @@ if [[ "$(uname -s)" == "Linux" ]]; then
         /etc/apt/sources.list.d/php.list; do
         sys_do rm -f -- "$source_file"
     done
+    sys_do rm -f /etc/apt/sources.list.d/ondrej-ubuntu-php-* 2>/dev/null || true
     unset source_file
 
     sys_do apt-get update -y -qq
@@ -264,6 +274,9 @@ STEPS=(
 
 # Variable to track status
 declare -a STEP_STATUS
+declare -a STEP_ERROR
+declare -a STEP_LOG_FILE
+declare -a STEP_EXIT_CODE
 INSTALL_FAILED=false
 
 
@@ -345,6 +358,19 @@ if $IS_LINUX; then
     IS_DEBIAN=false
     [[ "$DISTRO_ID" == "ubuntu" ]] && IS_UBUNTU=true
     [[ "$DISTRO_ID" == "debian" ]] && IS_DEBIAN=true
+
+    if ! $IS_UBUNTU && ! $IS_DEBIAN; then
+        die "Unsupported distribution: ${DISTRO_ID:-unknown}. SetupVibe Desktop supports Ubuntu 24.04+, Debian 12+, and Zorin OS 18+."
+    fi
+
+    if grep -qiE "(microsoft|wsl)" /proc/version 2>/dev/null || [[ -n "${WSL_DISTRO_NAME:-}" ]]; then
+        if ! systemctl is-system-running >/dev/null 2>&1 && [[ "$(ps -p 1 -o comm= 2>/dev/null)" != "systemd" ]]; then
+            echo -e "${YELLOW}⚠ Warning: systemd is not active as PID 1 in this WSL environment.${NC}"
+            echo -e "${YELLOW}  Services like Docker, SSH, cron, and PM2 require systemd.${NC}"
+            echo -e "${YELLOW}  To enable systemd, add the following to /etc/wsl.conf and restart WSL (wsl --shutdown):${NC}"
+            echo -e "${CYAN}    [boot]\n    systemd=true${NC}\n"
+        fi
+    fi
 else
     DISTRO_ID="macos"
     DISTRO_CODENAME=$(sw_vers -productVersion)
@@ -546,6 +572,10 @@ run_section() {
     path_deduplicate
     export PATH
 
+    local log_dir="$REAL_HOME/.setupvibe/logs"
+    sys_do install -d -o "$REAL_USER" -g "$REAL_GROUP" -m 0755 "$log_dir" 2>/dev/null || user_do mkdir -p "$log_dir"
+    local step_log="$log_dir/step_$((index + 1)).log"
+
     # A function called directly from an `if` condition inherits Bash's
     # errexit suppression. Run it in an isolated strict shell so an
     # intermediate failure cannot be hidden by a later successful command.
@@ -553,15 +583,21 @@ run_section() {
     (
         set -Eeuo pipefail
         "$2"
-    )
-    status=$?
+    ) 2>&1 | tee "$step_log"
+    status=${PIPESTATUS[0]}
     set -e
 
     if ((status == 0)); then
         STEP_STATUS[$index]="${GREEN}✔ OK${NC}"
+        rm -f "$step_log" 2>/dev/null || true
     else
         STEP_STATUS[$index]="${RED}✘ Error${NC}"
         INSTALL_FAILED=true
+        STEP_EXIT_CODE[$index]=$status
+        STEP_LOG_FILE[$index]="$log_dir/step_$((index + 1))_error.log"
+        mv -f "$step_log" "${STEP_LOG_FILE[$index]}" 2>/dev/null || true
+        sys_do chown "$REAL_USER:$REAL_GROUP" "${STEP_LOG_FILE[$index]}" 2>/dev/null || true
+        STEP_ERROR[$index]=$(tail -n 6 "${STEP_LOG_FILE[$index]}" 2>/dev/null || true)
     fi
 }
 
@@ -653,11 +689,33 @@ safe_download() {
 }
 
 
+deploy_repo_file() {
+    local rel_path="$1"
+    local dest_path="$2"
+    local min_bytes="${3:-10}"
+    local local_file="${SCRIPT_DIR:-}/$rel_path"
+
+    if [[ -n "${SCRIPT_DIR:-}" && -f "$local_file" ]]; then
+        local dest_dir
+        dest_dir=$(dirname "$dest_path")
+        user_do mkdir -p "$dest_dir"
+        if $IS_MACOS; then
+            user_do install -m 0644 "$local_file" "$dest_path"
+        else
+            sys_do install -o "$REAL_USER" -g "$REAL_GROUP" -m 0644 "$local_file" "$dest_path"
+        fi
+        echo -e "${GREEN}✔ Deployed local: $dest_path${NC}"
+    else
+        safe_download "$SETUPVIBE_RAW_BASE/$rel_path" "$dest_path" "$min_bytes"
+    fi
+}
+
+
 install_setupvibe_bin() {
     echo "Installing SetupVibe helper scripts..."
     user_do mkdir -p "$REAL_HOME/.setupvibe/bin"
     user_do rm -f "$REAL_HOME/.setupvibe/bin/sshcopykey"
-    if ! safe_download https://raw.githubusercontent.com/promovaweb/setupvibe/main/bin/ssh_copy_id "$REAL_HOME/.setupvibe/bin/ssh_copy_id" 500; then
+    if ! deploy_repo_file "bin/ssh_copy_id" "$REAL_HOME/.setupvibe/bin/ssh_copy_id" 500; then
         return 1
     fi
     user_do chmod +x "$REAL_HOME/.setupvibe/bin/ssh_copy_id"
@@ -852,7 +910,97 @@ install_antigravity() {
 
     user_do env PATH="$REAL_HOME/.local/bin:$PATH" agy install --skip-aliases --skip-path
     user_do env PATH="$REAL_HOME/.local/bin:$PATH" agy --version >/dev/null
+    user_do ln -sfn "$REAL_HOME/.local/bin/agy" "$REAL_HOME/.local/bin/gemini" 2>/dev/null || true
     echo -e "${GREEN}✔ Antigravity CLI installed and validated.${NC}"
+}
+
+
+install_opencode() {
+    echo "Checking OpenCode..."
+    if ! user_do bash -c "export PATH=\$HOME/.local/bin:\$PATH; command -v opencode" &>/dev/null; then
+        echo "Installing OpenCode..."
+        user_do bash -c "curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path"
+        if [[ -f "$REAL_HOME/.opencode/bin/opencode" ]]; then
+            user_do mkdir -p "$REAL_HOME/.local/bin"
+            user_do ln -sfn "$REAL_HOME/.opencode/bin/opencode" "$REAL_HOME/.local/bin/opencode"
+        fi
+    fi
+
+    if user_do bash -c "export PATH=\$HOME/.local/bin:\$PATH; command -v opencode" &>/dev/null; then
+        user_do bash -c "export PATH=\$HOME/.local/bin:\$PATH; opencode --version" >/dev/null
+        echo -e "${GREEN}✔ OpenCode installed and validated.${NC}"
+    else
+        echo -e "${YELLOW}⚠ OpenCode could not be validated.${NC}"
+    fi
+}
+
+
+install_ai_memory() {
+    echo "Checking ai-memory..."
+    if ! user_do bash -c "export PATH=\$HOME/.local/bin:\$PATH; command -v ai-memory" &>/dev/null; then
+        echo "Installing ai-memory..."
+        user_do bash -c "curl -fsSL https://github.com/akitaonrails/ai-memory/releases/latest/download/install.sh | sh"
+    fi
+
+    if user_do bash -c "export PATH=\$HOME/.local/bin:\$PATH; command -v ai-memory" &>/dev/null; then
+        user_do bash -c "export PATH=\$HOME/.local/bin:\$PATH; ai-memory --version" >/dev/null
+        echo "Setting up ai-memory background service and agent wiring..."
+        user_do bash -c "export PATH=\$HOME/.local/bin:\$PATH; ai-memory setup --yes" 2>/dev/null || true
+        echo -e "${GREEN}✔ ai-memory installed and initialized.${NC}"
+    else
+        echo -e "${YELLOW}⚠ ai-memory could not be installed.${NC}"
+    fi
+}
+
+
+install_ai_jail() {
+    local ai_jail_version="2.10.0"
+    local ai_jail_arch
+    local ai_jail_sha256
+    local ai_jail_url
+    local ai_jail_tmp
+
+    echo "Checking ai-jail..."
+    if ! user_do bash -c "export PATH=\$HOME/.local/bin:\$PATH; command -v ai-jail" &>/dev/null; then
+        if $IS_MACOS; then
+            if [[ "$ARCH_RAW" == "arm64" ]]; then
+                ai_jail_arch="macos-aarch64"
+                ai_jail_sha256="de065b48d7df14fc3035b8d2ce4a284081b0e70a458b6a4ee0956a7cd93a892c"
+            fi
+        else
+            if [[ "$ARCH_RAW" == "x86_64" || "$ARCH_RAW" == "amd64" ]]; then
+                ai_jail_arch="linux-x86_64"
+                ai_jail_sha256="cd4b4b5dad69d6fb11a0cd9a17e6c2e1848cac4ba3d8da0a507a6eb535dc0714"
+            fi
+        fi
+
+        if [[ -n "${ai_jail_arch:-}" ]]; then
+            echo "Installing ai-jail v${ai_jail_version} ($ai_jail_arch)..."
+            ai_jail_url="https://github.com/akitaonrails/ai-jail/releases/download/v${ai_jail_version}/ai-jail-${ai_jail_arch}.tar.gz"
+            ai_jail_tmp=$(mktemp)
+            if safe_download "$ai_jail_url" "$ai_jail_tmp" 1000000 "$ai_jail_sha256"; then
+                user_do mkdir -p "$REAL_HOME/.local/bin"
+                user_do tar -xzf "$ai_jail_tmp" -C "$REAL_HOME/.local/bin" ai-jail
+                user_do chmod 0755 "$REAL_HOME/.local/bin/ai-jail"
+                rm -f "$ai_jail_tmp"
+            else
+                rm -f "$ai_jail_tmp"
+                return 1
+            fi
+        elif command -v cargo &>/dev/null; then
+            echo "Compiling ai-jail from source via cargo..."
+            user_do env PATH="$REAL_HOME/.cargo/bin:$PATH" cargo install --locked ai-jail
+        fi
+    fi
+
+    if user_do bash -c "export PATH=\$HOME/.local/bin:\$PATH; command -v ai-jail" &>/dev/null; then
+        user_do bash -c "export PATH=\$HOME/.local/bin:\$PATH; ai-jail --version" >/dev/null
+        echo "Bootstrapping ai-jail permissions for AI agents..."
+        user_do bash -c "export PATH=\$HOME/.local/bin:\$PATH; ai-jail --bootstrap" 2>/dev/null || true
+        echo -e "${GREEN}✔ ai-jail installed and bootstrapped.${NC}"
+    else
+        echo -e "${YELLOW}⚠ ai-jail could not be installed on this platform/architecture.${NC}"
+    fi
 }
 
 
@@ -870,7 +1018,7 @@ step_1() {
         sys_do apt-get install -y build-essential git wget unzip fontconfig curl sshpass \
             libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev llvm \
             libncurses5-dev xz-utils tk-dev libxml2-dev libxmlsec1-dev libffi-dev liblzma-dev \
-            libyaml-dev autoconf bison procps file tmux ffmpeg imagemagick cron
+            libyaml-dev autoconf bison procps file tmux ffmpeg imagemagick cron bubblewrap
 
         # Adding Charmbracelet Repo (needed for Glow)
         install_key "https://repo.charm.sh/apt/gpg.key" "/etc/apt/keyrings/charm.gpg"
@@ -1007,8 +1155,13 @@ step_3() {
     else
         echo "Configuring PHP Repository..."
         if $IS_UBUNTU; then
-            echo "Using Ubuntu PPA Strategy..."
-            sys_do add-apt-repository ppa:ondrej/php -y
+            if apt-cache show "php${PHP_VERSION}" &>/dev/null; then
+                echo "PHP $PHP_VERSION is available natively in Ubuntu ($DISTRO_CODENAME). Skipping PPA."
+                sys_do rm -f /etc/apt/sources.list.d/ondrej-ubuntu-php-* 2>/dev/null || true
+            else
+                echo "Using Ubuntu PPA Strategy..."
+                sys_do add-apt-repository ppa:ondrej/php -y
+            fi
         elif $IS_DEBIAN; then
             echo "Using Debian Sury Strategy..."
             # Sury supports Debian 12 (bookworm) and Debian 13 (trixie).
@@ -1271,7 +1424,11 @@ step_6() {
 
     user_do env PATH="$npm_path" pnpm --version
     user_do env PATH="$npm_path" pm2 --version
-    user_do "$REAL_HOME/.bun/bin/bun" --version
+    if [[ -x "$REAL_HOME/.bun/bin/bun" ]]; then
+        user_do "$REAL_HOME/.bun/bin/bun" --version
+    else
+        user_do command -v bun &>/dev/null && user_do bun --version
+    fi
 }
 
 
@@ -1321,9 +1478,14 @@ step_7() {
         # Ansible Strategy
         echo "Configuring Ansible..."
         if $IS_UBUNTU; then
-            echo "Using Ubuntu Ansible PPA Strategy..."
-            sys_do add-apt-repository --yes --update ppa:ansible/ansible
-            sys_do apt-get install -y ansible
+            if apt-cache show ansible &>/dev/null; then
+                echo "Ansible is available natively in Ubuntu ($DISTRO_CODENAME). Skipping PPA."
+                sys_do apt-get install -y ansible
+            else
+                echo "Using Ubuntu Ansible PPA Strategy..."
+                sys_do add-apt-repository --yes --update ppa:ansible/ansible
+                sys_do apt-get install -y ansible
+            fi
         elif $IS_DEBIAN; then
             echo "Using Debian Ansible Strategy..."
             # Debian 12+ (Bookworm/Trixie) removes 'ansible' package; 'ansible-core' is the base.
@@ -1341,7 +1503,7 @@ step_7() {
     # Portainer Setup (Both macOS & Linux)
     echo "Configuring Portainer..."
     user_do mkdir -p "$REAL_HOME/.setupvibe/portainer_data"
-    safe_download https://raw.githubusercontent.com/promovaweb/setupvibe/main/conf/portainer-compose.yml "$REAL_HOME/.setupvibe/portainer-compose.yml"
+    deploy_repo_file "conf/portainer-compose.yml" "$REAL_HOME/.setupvibe/portainer-compose.yml"
     if $IS_LINUX; then
         sys_do chown -R "$REAL_USER:$REAL_GROUP" "$REAL_HOME/.setupvibe"
     fi
@@ -1405,7 +1567,9 @@ step_9() {
         
         echo "Installing Network Tools (Rust)..."
         for tool in bandwhich gping trippy rustscan; do
-            if ! command -v $tool &> /dev/null; then
+            bin_name="$tool"
+            [[ "$tool" == "trippy" ]] && bin_name="trip"
+            if ! command -v "$bin_name" &> /dev/null; then
                 user_do cargo install $tool
             fi
         done
@@ -1426,7 +1590,9 @@ step_9() {
 
         echo "Installing Network Tools (Rust)..."
         for tool in bandwhich gping trippy rustscan; do
-            if ! user_do bash -c "export PATH=\$HOME/.cargo/bin:\$PATH; command -v $tool" &> /dev/null; then
+            bin_name="$tool"
+            [[ "$tool" == "trippy" ]] && bin_name="trip"
+            if ! user_do bash -c "export PATH=\$HOME/.cargo/bin:\$PATH; command -v $bin_name" &> /dev/null; then
                  user_do bash -c "export PATH=\$HOME/.cargo/bin:\$PATH; cargo install $tool"
             fi
         done
@@ -1537,7 +1703,7 @@ step_11() {
         perl -i -pe 's/╭/┌/g; s/╰/└/g; s/\x{e0b6}/\x{e0b2}/g; s/\x{e0b4}/\x{e0b0}/g' "$REAL_HOME/.config/starship.toml"
 
         # macOS ZSHRC
-        safe_download https://raw.githubusercontent.com/promovaweb/setupvibe/main/conf/zshrc-macos.zsh "$REAL_HOME/.zshrc"
+        deploy_repo_file "conf/zshrc-macos.zsh" "$REAL_HOME/.zshrc"
     else
         sys_do apt-get install -y zsh
 
@@ -1571,12 +1737,45 @@ step_11() {
         perl -i -pe 's/╭/┌/g; s/╰/└/g; s/\x{e0b6}/\x{e0b2}/g; s/\x{e0b4}/\x{e0b0}/g' "$REAL_HOME/.config/starship.toml"
 
         # Linux ZSHRC
-        safe_download https://raw.githubusercontent.com/promovaweb/setupvibe/main/conf/zshrc-linux.zsh "$REAL_HOME/.zshrc"
+        deploy_repo_file "conf/zshrc-linux.zsh" "$REAL_HOME/.zshrc"
         sys_do chown "$REAL_USER:$REAL_GROUP" "$REAL_HOME/.zshrc"
 
         # Ensure ~/.local/bin is in .bashrc so tools like uv are accessible in bash sessions
         if ! grep -q '\.local/bin' "$REAL_HOME/.bashrc" 2>/dev/null; then
             echo 'export PATH="$HOME/.local/bin:$PATH"' | user_do tee -a "$REAL_HOME/.bashrc" > /dev/null
+        fi
+
+        # Ensure setupvibe alias is in .bashrc
+        if ! grep -q 'alias setupvibe=' "$REAL_HOME/.bashrc" 2>/dev/null; then
+            echo 'alias setupvibe="curl -fsSL https://raw.githubusercontent.com/jjeffersonlima/setupvibelinux/main/desktop.sh | bash"' | user_do tee -a "$REAL_HOME/.bashrc" > /dev/null
+        fi
+
+        # Ensure ai-jail smart launcher and aliases are in .bashrc
+        if ! grep -q 'ai-jail()' "$REAL_HOME/.bashrc" 2>/dev/null; then
+            cat << 'EOF' | user_do tee -a "$REAL_HOME/.bashrc" > /dev/null
+
+# AI Sandbox (ai-jail wrapper & aliases)
+ai-jail() {
+    case "$1" in
+        agy)
+            shift
+            command ai-jail --network --rw-map "$HOME/.gemini" agy "$@"
+            ;;
+        gemini|claude|codex|opencode|crush|grok|pi|jcode|kimi|kiro-cli|devin)
+            local tool="$1"
+            shift
+            command ai-jail --network "$tool" "$@"
+            ;;
+        *)
+            command ai-jail "$@"
+            ;;
+    esac
+}
+alias jagy="ai-jail agy"
+alias jclaude="ai-jail claude"
+alias jcodex="ai-jail codex"
+alias jopencode="ai-jail opencode"
+EOF
         fi
 
         if [ "$SHELL" != "/bin/zsh" ] && [ "$SHELL" != "/usr/bin/zsh" ]; then
@@ -1591,7 +1790,7 @@ step_12() {
     git_ensure "https://github.com/tmux-plugins/tpm" "$REAL_HOME/.tmux/plugins/tpm"
 
     echo "Downloading tmux-desktop.conf..."
-    safe_download https://raw.githubusercontent.com/promovaweb/setupvibe/main/conf/tmux-desktop.conf "$REAL_HOME/.tmux.conf"
+    deploy_repo_file "conf/tmux-desktop.conf" "$REAL_HOME/.tmux.conf"
 
     # Also install to /root if running as root with a different REAL_HOME
     if [[ "$(id -u)" -eq 0 && "$REAL_HOME" != "/root" ]]; then
@@ -1670,6 +1869,15 @@ step_13() {
     echo "Installing Antigravity CLI..."
     install_antigravity
 
+    echo "Installing OpenCode..."
+    install_opencode
+
+    echo "Installing ai-memory..."
+    install_ai_memory
+
+    echo "Installing ai-jail..."
+    install_ai_jail
+
     echo "Installing Spec-Kit (specify-cli)..."
     if ! user_do bash -c "export PATH=\$HOME/.local/bin:\$PATH; command -v specify" &>/dev/null; then
         user_do bash -c "export PATH=\$HOME/.local/bin:\$PATH; uv tool install specify-cli"
@@ -1711,7 +1919,15 @@ step_14() {
     fi
 
     echo "Configuring PM2 for auto-startup..."
-    if pm2_bin=$(command -v pm2); then
+    if ! pm2_bin=$(command -v pm2); then
+        for candidate in "$REAL_HOME/.npm-global/bin/pm2" "$BREW_PREFIX/bin/pm2" "$REAL_HOME/.local/bin/pm2"; do
+            if [[ -x "$candidate" ]]; then
+                pm2_bin="$candidate"
+                break
+            fi
+        done
+    fi
+    if [ -n "${pm2_bin:-}" ]; then
         if $IS_MACOS; then
             local launch_agent_dir="$REAL_HOME/Library/LaunchAgents"
             local launch_agent_label="pm2.$REAL_USER"
@@ -1790,7 +2006,7 @@ EOF
         user_do "$pm2_bin" set pm2:log_date_format "YYYY-MM-DD HH:mm:ss"
 
         echo "Downloading PM2 ecosystem configuration..."
-        safe_download https://raw.githubusercontent.com/promovaweb/setupvibe/main/conf/ecosystem.config.js "$REAL_HOME/ecosystem.config.js"
+        deploy_repo_file "conf/ecosystem.config.js" "$REAL_HOME/ecosystem.config.js"
         if $IS_LINUX; then
             sys_do chown "$REAL_USER:$REAL_GROUP" "$REAL_HOME/ecosystem.config.js"
         fi
@@ -1844,6 +2060,19 @@ done
 echo ""
 
 if $INSTALL_FAILED; then
+    echo -e "${RED}--------------------------------------------------------${NC}"
+    echo -e "${BOLD}${RED}Detalhes das falhas encontradas:${NC}"
+    echo -e "${RED}--------------------------------------------------------${NC}"
+    for i in "${!STEPS[@]}"; do
+        if [[ -n "${STEP_ERROR[$i]:-}" ]]; then
+            echo -e "${YELLOW}▶ [$(($i+1))] ${STEPS[$i]} (código de saída: ${STEP_EXIT_CODE[$i]:-1}):${NC}"
+            while IFS= read -r err_line; do
+                [[ -z "$err_line" ]] && continue
+                echo -e "    ${RED}│${NC} $err_line"
+            done <<< "${STEP_ERROR[$i]}"
+            echo -e "    ${CYAN}↳ Log detalhado em: ${STEP_LOG_FILE[$i]}${NC}\n"
+        fi
+    done
     echo -e "${RED}${BOLD}SetupVibe Desktop completed with errors.${NC}" >&2
     exit 1
 fi

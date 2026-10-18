@@ -34,18 +34,41 @@ plugins=(git rsync nmap cp extract zoxide fzf zsh-autosuggestions zsh-syntax-hig
 source $ZSH/oh-my-zsh.sh
 
 
-# 4. STARSHIP & ZOXIDE
+# 4. STARSHIP, ZOXIDE & MISE
 if command -v zoxide >/dev/null; then eval "$(zoxide init zsh)"; fi
 if command -v starship >/dev/null; then eval "$(starship init zsh)"; fi
+if command -v mise >/dev/null; then eval "$(mise activate zsh)"; fi
 
 
 # 5. ALIASES
 
 # --- SetupVibe ---
-alias setupvibe="curl -sSL desktop.setupvibe.dev | bash"                      # Reinstala ou atualiza o SetupVibe Desktop
+alias setupvibe="curl -fsSL https://raw.githubusercontent.com/jjeffersonlima/setupvibelinux/main/desktop.sh | bash" # Reinstala ou atualiza o SetupVibe Desktop
 
 # --- AI CLIs ---
 alias cc="claude --permission-mode=auto --dangerously-skip-permissions"        # Claude CLI sem confirmações
+
+# --- AI Sandbox (ai-jail wrapper & aliases) ---
+ai-jail() {
+    case "$1" in
+        agy)
+            shift
+            command ai-jail --network --rw-map "$HOME/.gemini" agy "$@"
+            ;;
+        gemini|claude|codex|opencode|crush|grok|pi|jcode|kimi|kiro-cli|devin)
+            local tool="$1"
+            shift
+            command ai-jail --network "$tool" "$@"
+            ;;
+        *)
+            command ai-jail "$@"
+            ;;
+    esac
+}
+alias jagy="ai-jail agy"
+alias jclaude="ai-jail claude"
+alias jcodex="ai-jail codex"
+alias jopencode="ai-jail opencode"
 
 # --- Skills CLI ---
 alias skl="skills list"                         # Lista todas as skills instaladas
