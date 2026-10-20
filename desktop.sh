@@ -573,7 +573,10 @@ run_section() {
     export PATH
 
     local log_dir="$REAL_HOME/.setupvibe/logs"
-    sys_do install -d -o "$REAL_USER" -g "$REAL_GROUP" -m 0755 "$log_dir" 2>/dev/null || user_do mkdir -p "$log_dir"
+    sys_do install -d -o "$REAL_USER" -g "$REAL_GROUP" -m 0755 \
+        "$REAL_HOME/.setupvibe" \
+        "$log_dir" 2>/dev/null || user_do mkdir -p "$log_dir"
+    sys_do chown "$REAL_USER:$REAL_GROUP" "$REAL_HOME/.setupvibe" 2>/dev/null || true
     local step_log="$log_dir/step_$((index + 1)).log"
 
     # A function called directly from an `if` condition inherits Bash's
@@ -713,7 +716,9 @@ deploy_repo_file() {
 
 install_setupvibe_bin() {
     echo "Installing SetupVibe helper scripts..."
-    user_do mkdir -p "$REAL_HOME/.setupvibe/bin"
+    sys_do install -d -o "$REAL_USER" -g "$REAL_GROUP" -m 0755 \
+        "$REAL_HOME/.setupvibe" \
+        "$REAL_HOME/.setupvibe/bin"
     user_do rm -f "$REAL_HOME/.setupvibe/bin/sshcopykey"
     if ! deploy_repo_file "bin/ssh_copy_id" "$REAL_HOME/.setupvibe/bin/ssh_copy_id" 500; then
         return 1
@@ -753,7 +758,9 @@ install_herdr() {
     esac
 
     herdr_target="${herdr_os}-${herdr_arch}"
-    user_do mkdir -p "$REAL_HOME/.setupvibe/tmp"
+    sys_do install -d -o "$REAL_USER" -g "$REAL_GROUP" -m 0755 \
+        "$REAL_HOME/.setupvibe" \
+        "$REAL_HOME/.setupvibe/tmp"
     herdr_tmp_dir=$(user_do mktemp -d "$REAL_HOME/.setupvibe/tmp/herdr.XXXXXX")
     manifest_tmp="$herdr_tmp_dir/latest.json"
     binary_tmp="$herdr_tmp_dir/herdr"
@@ -834,7 +841,10 @@ install_antigravity() {
         antigravity_platform="${antigravity_platform}_musl"
     fi
 
-    user_do mkdir -p "$REAL_HOME/.local/bin" "$REAL_HOME/.setupvibe/tmp"
+    user_do mkdir -p "$REAL_HOME/.local/bin"
+    sys_do install -d -o "$REAL_USER" -g "$REAL_GROUP" -m 0755 \
+        "$REAL_HOME/.setupvibe" \
+        "$REAL_HOME/.setupvibe/tmp"
     antigravity_tmp_dir=$(user_do mktemp -d "$REAL_HOME/.setupvibe/tmp/antigravity.XXXXXX")
     manifest_tmp="$antigravity_tmp_dir/manifest.json"
 
@@ -1502,7 +1512,9 @@ step_7() {
 
     # Portainer Setup (Both macOS & Linux)
     echo "Configuring Portainer..."
-    user_do mkdir -p "$REAL_HOME/.setupvibe/portainer_data"
+    sys_do install -d -o "$REAL_USER" -g "$REAL_GROUP" -m 0755 \
+        "$REAL_HOME/.setupvibe" \
+        "$REAL_HOME/.setupvibe/portainer_data"
     deploy_repo_file "conf/portainer-compose.yml" "$REAL_HOME/.setupvibe/portainer-compose.yml"
     if $IS_LINUX; then
         sys_do chown -R "$REAL_USER:$REAL_GROUP" "$REAL_HOME/.setupvibe"

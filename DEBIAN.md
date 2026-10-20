@@ -249,7 +249,8 @@ escopo:
 6. validação dos comandos instalados;
 7. validação dos serviços com `systemctl is-active`;
 8. validação de Portainer com `docker ps`;
-9. teste negativo do Desktop sem TTY.
+9. teste negativo do Desktop sem TTY;
+10. execução da suíte de desenvolvimento com `bash tests/run_tests.sh`.
 
 Avisos de dependências opcionais do npm não são por si só falhas. O critério é
 o exit code da instalação e a execução bem-sucedida dos comandos gerenciados.
@@ -433,3 +434,27 @@ o arquivo temporário é removido. Se houver falha (`status != 0`):
    do usuário real;
 3. O resumo final lista o trecho exato de erro das últimas linhas e o caminho do
    log completo, eliminando a necessidade de rolar manualmente o terminal.
+
+### Permissões de diretórios intermediários com `install -d` e auto-cura de `~/.setupvibe`
+
+O utilitário GNU `install -d -o <user> -g <group> -m <mode> <dir>` aplica modo e
+titularidade unicamente ao argumento final, criando componentes intermediários
+ausentes com umask padrão e a identidade do processo executor (`root` ou
+`nobody:nogroup` em namespaces WSL/contêineres).
+
+Quando a preparação de logs em `run_section()` passava apenas `~/.setupvibe/logs`,
+o diretório pai `~/.setupvibe` era gerado pertencendo ao `root`/`nobody` com modo
+`0755`, impedindo qualquer comando desprivilegiado posterior de criar subpastas
+(`portainer_data`, `bin`, `tmp`) com `Permission denied`.
+
+A correção adotada:
+
+- `run_section()` em `desktop.sh` e `server.sh` passa explicitamente o diretório
+  pai e o diretório filho para o `sys_do install -d` e aplica um `chown` imediato
+  para recuperar ambientes previamente corrompidos;
+- `install_setupvibe_bin`, configuração de Portainer, `install_herdr` e
+  `install_antigravity` asseguram o diretório gerenciado e suas subpastas com
+  `install -d` explícito;
+- A suíte de testes em `tests/` valida estaticamente e dinamicamente a ausência
+  de `mkdir` desprotegido em `~/.setupvibe` e a capacidade de auto-cura de
+  permissões restritivas.

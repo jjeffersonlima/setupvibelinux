@@ -481,7 +481,10 @@ run_section() {
     echo -e "${BLUE}========================================================${NC}"
 
     local log_dir="$REAL_HOME/.setupvibe/logs"
-    sys_do install -d -o "$REAL_USER" -g "$REAL_GROUP" -m 0755 "$log_dir" 2>/dev/null || user_do mkdir -p "$log_dir"
+    sys_do install -d -o "$REAL_USER" -g "$REAL_GROUP" -m 0755 \
+        "$REAL_HOME/.setupvibe" \
+        "$log_dir" 2>/dev/null || user_do mkdir -p "$log_dir"
+    sys_do chown "$REAL_USER:$REAL_GROUP" "$REAL_HOME/.setupvibe" 2>/dev/null || true
     local step_log="$log_dir/step_$((index + 1)).log"
 
     set +e
@@ -624,7 +627,9 @@ install_herdr() {
     esac
 
     herdr_target="linux-${herdr_arch}"
-    user_do mkdir -p "$REAL_HOME/.setupvibe/tmp"
+    sys_do install -d -o "$REAL_USER" -g "$REAL_GROUP" -m 0755 \
+        "$REAL_HOME/.setupvibe" \
+        "$REAL_HOME/.setupvibe/tmp"
     herdr_tmp_dir=$(user_do mktemp -d "$REAL_HOME/.setupvibe/tmp/herdr.XXXXXX")
     manifest_tmp="$herdr_tmp_dir/latest.json"
     binary_tmp="$herdr_tmp_dir/herdr"
