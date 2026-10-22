@@ -32,7 +32,11 @@ ai-jail() {
             shift
             command ai-jail --network --rw-map "$HOME/.gemini" agy "$@"
             ;;
-        gemini|claude|codex|opencode|crush|grok|pi|jcode|kimi|kiro-cli|devin)
+        opencode)
+            shift
+            command ai-jail --network --rw-map "$HOME/.config/opencode" --rw-map "$HOME/.local/share/opencode" opencode "$@"
+            ;;
+        gemini|claude|codex|crush|grok|pi|jcode|kimi|kiro-cli|devin)
             local tool="$1"
             shift
             command ai-jail --network "$tool" "$@"

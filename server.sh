@@ -582,6 +582,69 @@ deploy_repo_file() {
     fi
 }
 
+
+sync_ai_jail_shell_block() {
+    local target_file="$1"
+    local start_marker="# >>> setupvibe ai-jail >>>"
+    local end_marker="# <<< setupvibe ai-jail <<<"
+    local tmp_file
+    tmp_file=$(mktemp)
+
+    local block_content
+    block_content=$(cat << 'EOF'
+# >>> setupvibe ai-jail >>>
+# AI Sandbox (ai-jail wrapper & aliases)
+ai-jail() {
+    case "$1" in
+        agy)
+            shift
+            command ai-jail --network --rw-map "$HOME/.gemini" agy "$@"
+            ;;
+        opencode)
+            shift
+            command ai-jail --network --rw-map "$HOME/.config/opencode" --rw-map "$HOME/.local/share/opencode" opencode "$@"
+            ;;
+        gemini|claude|codex|crush|grok|pi|jcode|kimi|kiro-cli|devin)
+            local tool="$1"
+            shift
+            command ai-jail --network "$tool" "$@"
+            ;;
+        *)
+            command ai-jail "$@"
+            ;;
+    esac
+}
+alias jagy="ai-jail agy"
+alias jclaude="ai-jail claude"
+alias jcodex="ai-jail codex"
+alias jopencode="ai-jail opencode"
+# <<< setupvibe ai-jail <<<
+EOF
+)
+
+    if [[ ! -f "$target_file" ]]; then
+        user_do touch "$target_file"
+    fi
+
+    # Clean legacy unmarked ai-jail block if present
+    if ! grep -Fq "$start_marker" "$target_file" 2>/dev/null && grep -Fq 'ai-jail()' "$target_file" 2>/dev/null; then
+        user_do sed -i '/# AI Sandbox (ai-jail wrapper & aliases)/,/alias jopencode="ai-jail opencode"/d' "$target_file"
+    fi
+
+    if grep -Fq "$start_marker" "$target_file" 2>/dev/null; then
+        awk -v start="$start_marker" -v end="$end_marker" -v new_block="$block_content" '
+            $0 == start { print new_block; inside=1; next }
+            $0 == end { inside=0; next }
+            !inside { print }
+        ' "$target_file" > "$tmp_file"
+        sys_do install -o "$REAL_USER" -g "$REAL_GROUP" -m 0644 "$tmp_file" "$target_file"
+        rm -f "$tmp_file"
+    else
+        printf '\n%s\n' "$block_content" | user_do tee -a "$target_file" >/dev/null
+        rm -f "$tmp_file"
+    fi
+}
+
 backup_file_once() {
     local file=$1
     local backup="${file}.pre-setupvibe"
@@ -982,6 +1045,9 @@ step_5() {
             user_do tee -a "$REAL_HOME/.bashrc" >/dev/null
     fi
 
+    # Ensure ai-jail smart launcher and aliases are in .bashrc (idempotent marked block)
+    sync_ai_jail_shell_block "$REAL_HOME/.bashrc"
+
     current_shell=$(getent passwd "$REAL_USER" | cut -d: -f7)
     if [[ "$current_shell" != "$(command -v zsh)" ]]; then
         sys_do chsh -s "$(command -v zsh)" "$REAL_USER"
@@ -1241,6 +1307,14 @@ if [[ "$INSTALL_FAILED" == "true" ]]; then
 fi
 
 echo -e "${GREEN}${BOLD}SetupVibe Server Edition Completed Successfully! 🚀${NC}"
+echo ""
+echo -e "${BLUE}--------------------------------------------------------${NC}"
+echo -e "${BOLD}${CYAN}✦ FLUXO RECOMENDADO PARA FERRAMENTAS DE IA:${NC}"
+echo -e "  1. Autentique no host para abrir o navegador (OAuth):"
+echo -e "     ${GREEN}claude${NC}  |  ${GREEN}codex${NC}  |  ${GREEN}opencode${NC}  |  ${GREEN}agy${NC}"
+echo -e "  2. Execute no sandbox seguro com suas credenciais preservadas:"
+echo -e "     ${GREEN}jclaude${NC} |  ${GREEN}jcodex${NC} |  ${GREEN}jopencode${NC} |  ${GREEN}jagy${NC}"
+echo -e "${BLUE}--------------------------------------------------------${NC}"
 echo ""
 echo -e "${YELLOW}${BOLD}IMPORTANT - Apply changes to your shell:${NC}"
 echo -e "${CYAN}Reload ZSH now:${NC}   exec zsh"

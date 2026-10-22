@@ -423,6 +423,42 @@ expandida para incluir:
 - Aliases e wrapper de shell para execução com rede ativada e mapeamento de
   credenciais (`ai-jail agy`, `jagy`, `jclaude`, `jcodex`, `jopencode`).
 
+#### Fluxo de Autenticação Manual das Ferramentas de IA (Host-First)
+
+Por design de segurança estrito, o `ai-jail` isola sockets de exibição gráfica
+(X11/Wayland), D-Bus e acessos ao sistema de arquivos hospedeiro (inclusive a
+interoperabilidade com navegadores do Windows via `/mnt/c` no WSL 2). Dessa
+forma, tentativas de autenticação interativa via navegador a partir de dentro
+do sandbox falham ao disparar `xdg-open` ou redirecionar o callback OAuth
+para o loopback `127.0.0.1`.
+
+O modelo adotado pelo SetupVibe segue o padrão *Pre-authenticated Agent*:
+
+1. **Login Inicial no Host:** O desenvolvedor executa o comando nativo
+   diretamente no terminal do sistema hospedeiro (`claude`, `codex`, `opencode`,
+   `agy`). O navegador do sistema abre normalmente, conclui o fluxo OAuth e
+   grava as credenciais persistentes no `$HOME` (`~/.claude.json`, `~/.codex/`,
+   `~/.config/opencode`, `~/.local/share/opencode`, `~/.gemini/`);
+2. **Execução Segura no Sandbox:** O desenvolvedor encerra a ferramenta no host
+   e passa a utilizá-la via aliases isolados (`jclaude`, `jcodex`, `jopencode`,
+   `jagy`);
+3. **Mapeamento e Renovação Contínua:** A função wrapper `ai-jail()` monta as
+   pastas de credenciais em modo leitura e escrita (`rw`) usando `--agent-state`
+   e `--rw-map`. Assim, os agentes iniciam já logados e renovam tokens de acesso
+   via chamadas HTTPS de segundo plano gravando diretamente no disco do host.
+
+#### Idempotência de Configurações de Shell (`.bashrc` e `.zshrc`)
+
+Para que re-execuções do instalador em uma máquina ou VM existente não dupliquem
+funções de shell nem deixem de atualizar versões anteriores, o SetupVibe adota:
+
+- `~/.zshrc`: sobrescrita determinística a partir dos templates versionados
+  (`conf/zshrc-linux.zsh`, `conf/zshrc-server.zsh`);
+- `~/.bashrc`: injeção idempotente delimitada por marcadores exclusivos
+  (`# >>> setupvibe ai-jail >>>` e `# <<< setupvibe ai-jail <<<`). Quando o
+  bloco já existe, seu conteúdo é substituído de forma limpa sem tocar nas
+  demais customizações do usuário.
+
 ### Captura granular de falhas e logs por etapa
 
 Cada etapa agora transmite sua saída normalmente para o terminal enquanto

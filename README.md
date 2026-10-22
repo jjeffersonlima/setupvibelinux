@@ -46,10 +46,17 @@ Use o `server.sh` em máquinas Linux headless (sem interface gráfica):
 ### Engenharia de IA e Ecossistema Multiagente
 
 - **CLIs Nativas de IA:** Instala Anthropic Claude Code, OpenAI Codex CLI, Google Antigravity CLI (`agy`), OpenCode (`opencode`), a [Vercel Labs Skills CLI](https://github.com/vercel-labs/skills) e Spec-Kit (`specify`).
-- **Sandbox Seguro e Isolamento (ai-jail):** Instala o `ai-jail` com `bubblewrap` e Landlock, incluindo gerador automático de permissões (`--bootstrap`), wrapper inteligente com rede ativada e atalhos rápidos de terminal (`jagy`, `jclaude`, `jcodex`, `jopencode`).
+- **Sandbox Seguro e Isolamento (ai-jail):** Instala o `ai-jail` com `bubblewrap` e Landlock, incluindo gerador automático de permissões (`--bootstrap`), wrapper inteligente com rede ativada, mapeamento de credenciais e atalhos rápidos de terminal (`jagy`, `jclaude`, `jcodex`, `jopencode`).
 - **Memória Contínua Multiagente (ai-memory):** Instala e inicializa o `ai-memory` nativo com servidor MCP e serviço de fundo, conectando sessões e histórico entre todos os agentes.
 - **Multiplexador de Terminal Herdr:** Instala o [Herdr](https://github.com/herdrdev/herdr) nas edições Unix Desktop e Server, permitindo executar, observar e gerenciar múltiplos agentes de codificação por IA simultaneamente em paralelo. Consulte o [Guia do Herdr](docs/pt-br/HERDR.md).
 - **Instalação Segura do Antigravity:** Na Desktop Edition para Unix, resolve e valida o manifesto oficial da versão via SHA-512 diretamente para executar `agy install --skip-aliases --skip-path`, garantindo que os perfis de shell do usuário permaneçam limpos.
+
+### Autenticação das Ferramentas de IA e Sandbox
+
+Para garantir segurança estrita e compatibilidade com navegadores e callbacks OAuth (inclusive no WSL 2):
+
+1. **Autenticação no Host (1x):** Execute o comando nativo no terminal (`claude`, `codex`, `opencode`, `agy`) para concluir o login pelo navegador. As credenciais ficam salvas no seu `$HOME`.
+2. **Execução no Sandbox:** Utilize os aliases isolados (`jclaude`, `jcodex`, `jopencode`, `jagy`). O `ai-jail` herda o estado autenticado via bind mount seguro, protegendo seu ambiente contra execuções acidentais ou comandos destrutivos.
 
 ### Runtimes e Gerenciadores de Pacotes Verificados
 
